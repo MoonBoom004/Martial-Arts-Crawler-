@@ -26,7 +26,9 @@ if (SEED_ONLY && !seedUrls.length && !process.argv.includes("--check-config")) t
 const USER_AGENT = "CompetitionFinderCrawler/1.3 (+https://martial-competition-finder.hayboom.chatgpt.site)";
 const storageDir = path.resolve(process.env.CRAWLER_STORAGE_DIR || fileURLToPath(new URL(`../storage/region-${REGION}`, import.meta.url)));
 const metadata = { crawlerVersion: VERSION, region: `group-${REGION}` }, headers = receiverHeaders(TOKEN, process.env.SITE_ACCESS_TOKEN);
-const queueSuffix = `${REGION}${DRY_RUN ? "-dry-run" : ""}`;
+// v2 starts with clean cloud queues after the old queue accumulated search URLs
+// that the provider correctly refused under robots.txt.
+const queueSuffix = `v2-${REGION}${DRY_RUN ? "-dry-run" : ""}`;
 if (!DRY_RUN && !TOKEN) throw new Error("CRAWLER_INGEST_TOKEN is required. Use DRY_RUN=1 to extract locally without publishing.");
 const sendBatch = batch => receiverRequest(INGEST_URL, headers, batch);
 const outbox = ON_APIFY
@@ -114,12 +116,15 @@ const discoveryCrawler = new CheerioCrawler({
   failedRequestHandler: async ({ request }) => {
     counts.failed++;
     counts.sourceFailures.push({ url: request.url, reason: "discovery_failed" });
-    if (request.userData.kind !== "search") await lead(request.url, request.userData.title, "Directory could not be read; queued for a future check");
+    if (request.userData.kind !== "search") {
+      await lead(request.url, request.userData.title, "Lightweight reader could not read this directory; queued for browser rendering");
+      await enqueue(request.url, request.userData.title, "directory", request.userData.inheritedSport, { depth: request.userData.depth || 0 });
+    }
   },
 }, config);
 
 const browserCrawler = new PlaywrightCrawler({
-  ...sharedOptions, requestQueue: browserQueue, maxConcurrency: 2, ...requestBudget(MAX_PAGES), navigationTimeoutSecs: 40, requestHandlerTimeoutSecs: 120,
+  ...sharedOptions, requestQueue: browserQueue, maxConcurrency: 1, ...requestBudget(MAX_PAGES), navigationTimeoutSecs: 40, requestHandlerTimeoutSecs: 120,
   launchContext: { launcher: chromium, useIncognitoPages: true, launchOptions: { headless: true, chromiumSandbox: true, env: browserEnvironment } },
   browserPoolOptions: { useFingerprints: false, prePageCreateHooks: [(_id, _controller, options) => { if (options) { options.serviceWorkers = "block"; options.userAgent = USER_AGENT; } }] },
   preNavigationHooks: [async ({ page, request }, options) => {
@@ -183,7 +188,10 @@ if (process.argv.includes("--check-config")) {
       if (new URL(url).hostname.endsWith("bing.com")) continue;
       try { await assertPublicHost(url); await discoveryQueue.addRequest({ url, uniqueKey: `${url}:${windowKey}`, userData: { kind: "directory", inheritedSport: sport } }); } catch { await lead(url, "", "Official directory could not be resolved"); }
     }
-    const queries = existingDiscoveryBacklog === 0 ? searchQueries(REGION, now, windowKey) : [];
+    // Bing's public search endpoint disallows this cloud crawler in robots.txt.
+    // Keep discovery on original calendars and their linked organizer pages here;
+    // the website's separate discovery layer may still enqueue search leads.
+    const queries = ON_APIFY ? [] : existingDiscoveryBacklog === 0 ? searchQueries(REGION, now, windowKey) : [];
     for (const { query, sport } of queries) await discoveryQueue.addRequest({ url: `https://www.bing.com/search?format=rss&q=${encodeURIComponent(query)}`, uniqueKey: `${query}:${windowKey}`, userData: { kind: "search", sport } });
   }
   let timedOut = false;
@@ -201,7 +209,8 @@ if (process.argv.includes("--check-config")) {
     if (!timedOut) await phase(browserCrawler, 0.45);
     if (!timedOut) await phase(documentCrawler, 0.25);
     if (!DRY_RUN) { const delivered = await outbox.flush(); for (const key of ["inserted", "updated", "rejected", "leadsReceived"]) counts[key] += delivered[key]; }
-    if (runOutcome(counts).failed) process.exitCode = 1;
+    const outcome = runOutcome(counts);
+    if (outcome.failed) process.exitCode = 1;
   } catch (error) {
     process.exitCode = 1;
     throw error;
@@ -209,7 +218,7 @@ if (process.argv.includes("--check-config")) {
     clearTimeout(deadline);
     const browserInfo = await browserQueue.getInfo(), discoveryInfo = await discoveryQueue.getInfo();
     const documentInfo = await documentQueue.getInfo();
-    const summary = { ...metadata, ...runOutcome(counts), timeBudgetSeconds: MAX_RUNTIME_SECONDS, pageCountLimit: MAX_PAGES || null, totalEventLimit: null, documentsRemaining: documentInfo?.pendingRequestCount ?? null, dryRun: DRY_RUN, timedOut, ...counts, browserPagesRemaining: browserInfo?.pendingRequestCount ?? null, discoveryPagesRemaining: discoveryInfo?.pendingRequestCount ?? null, finishedAt: new Date().toISOString() };
+    const summary = { ...metadata, ...counts, ...runOutcome(counts), timeBudgetSeconds: MAX_RUNTIME_SECONDS, pageCountLimit: MAX_PAGES || null, totalEventLimit: null, documentsRemaining: documentInfo?.pendingRequestCount ?? null, dryRun: DRY_RUN, timedOut, browserPagesRemaining: browserInfo?.pendingRequestCount ?? null, discoveryPagesRemaining: discoveryInfo?.pendingRequestCount ?? null, finishedAt: new Date().toISOString() };
     await mkdir(storageDir, { recursive: true }); await writeFile(path.join(storageDir, "last-run.json"), JSON.stringify(summary, null, 2));
     log.info(JSON.stringify(summary));
     if (ON_APIFY) { await Actor.setValue("OUTPUT", summary); await Actor.exit({ exitCode: process.exitCode || 0 }); } else await config.getStorageClient().teardown?.();
