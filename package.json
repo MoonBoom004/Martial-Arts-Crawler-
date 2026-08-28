@@ -1,0 +1,19 @@
+{
+  "name": "competition-finder-external-crawler",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "crawl": "node src/index.mjs",
+    "check": "node --check src/index.mjs && node --check src/event-data.mjs && node --check src/discovery.mjs && node --check src/snapshot.mjs && node --check src/documents.mjs && node --check src/delivery.mjs && node --check src/safety.mjs"
+  },
+  "dependencies": {
+    "apify": "3.7.0",
+    "crawlee": "3.18.1",
+    "playwright": "1.62.1",
+    "robots-parser": "3.0.1"
+  }
+}

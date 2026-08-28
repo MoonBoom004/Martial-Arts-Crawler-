@@ -1,0 +1,46 @@
+name: Test competition crawler
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: crawler-manual-test
+  cancel-in-progress: false
+jobs:
+  test:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --no-audit --no-fund
+      - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+      - run: python -m pip install -r requirements.txt
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - name: Small scan without database writes
+        run: npm run crawl
+        env:
+          DRY_RUN: '1'
+          SEED_ONLY: '1'
+          REGION: '0'
+          MAX_PAGES: '20'
+          MAX_DISCOVERY_PAGES: '15'
+          MAX_DOCUMENTS: '5'
+          MAX_RUNTIME_SECONDS: '300'
+      - name: Save test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-source-test-results
+          path: |
+            storage/region-0/last-run.json
+            storage/region-0/dry-run-outbox/
+          retention-days: 1
+          if-no-files-found: ignore
