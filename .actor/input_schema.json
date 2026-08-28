@@ -1,0 +1,62 @@
+{
+  "title": "Regional competition crawl",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "REGION": {
+      "title": "US region (0 through 4)",
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 4
+    },
+    "MAX_PAGES": {
+      "title": "Browser pages per run",
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 1000000,
+      "description": "Zero means no request-count cutoff. The time budget still applies; unfinished work remains queued."
+    },
+    "MAX_DISCOVERY_PAGES": {
+      "title": "Discovery pages per run",
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 1000000,
+      "description": "Zero means no request-count cutoff. The time budget still applies; unfinished work remains queued."
+    },
+    "MAX_DOCUMENTS": {
+      "title": "Posters and packets per run",
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 1000000,
+      "description": "Zero means no request-count cutoff. The time budget still applies; unfinished work remains queued."
+    },
+    "MAX_RUNTIME_SECONDS": {
+      "title": "Runtime budget (seconds)",
+      "type": "integer",
+      "default": 270,
+      "minimum": 30,
+      "maximum": 2400,
+      "description": "Soft processing budget. Use a 300-second platform timeout for a five-minute run."
+    },
+    "DRY_RUN": {
+      "title": "Test without publishing",
+      "type": "boolean",
+      "default": true
+    },
+    "SEED_ONLY": {
+      "title": "Use only diagnostic URLs",
+      "type": "boolean",
+      "default": false
+    },
+    "SEED_URLS": {
+      "title": "Diagnostic URLs, one per line",
+      "type": "string",
+      "editor": "textarea",
+      "default": ""
+    }
+  }
+}
