@@ -11,23 +11,19 @@ import { CloudOutbox, Outbox, receiverHeaders, receiverRequest } from "./deliver
 import { discoverPageLinks, isDirectoryUrl, isDocumentUrl, officialDirectories, searchQueries } from "./discovery.mjs";
 import { documentCandidates, documentEvents, PublicDocuments, readDocumentBytes } from "./documents.mjs";
 import { snapshotHtml } from "./snapshot.mjs";
+import { readRunOptions, requestBudget, runOutcome } from "./run-policy.mjs";
 
 const ON_APIFY = process.env.APIFY_IS_AT_HOME === "1";
 if (ON_APIFY) await Actor.init();
 const INPUT = ON_APIFY ? await Actor.getInput() || {} : {};
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const INGEST_URL = process.env.INGEST_URL || "https://martial-competition-finder.hayboom.chatgpt.site/api/ingest/external";
 const TOKEN = process.env.CRAWLER_INGEST_TOKEN;
 const DRY_RUN = process.env.DRY_RUN === "1" || INPUT.DRY_RUN === true, SEED_ONLY = process.env.SEED_ONLY === "1" || INPUT.SEED_ONLY === true;
-function integer(name, fallback, min, max) {
-  const value = Number(process.env[name] || INPUT[name] || fallback);
-  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${name} must be an integer from ${min} to ${max}`);
-  return value;
-}
-const REGION = integer("REGION", 0, 0, 4), MAX_PAGES = integer("MAX_PAGES", 300, 1, 2000), MAX_DISCOVERY_PAGES = integer("MAX_DISCOVERY_PAGES", 180, 1, 1000);
-const MAX_DOCUMENTS = integer("MAX_DOCUMENTS", 30, 1, 300);
-const MAX_RUNTIME_SECONDS = integer("MAX_RUNTIME_SECONDS", 1800, 30, 2400);
-const USER_AGENT = "CompetitionFinderCrawler/1.2 (+https://martial-competition-finder.hayboom.chatgpt.site)";
+const { region: REGION, pages: MAX_PAGES, discoveryPages: MAX_DISCOVERY_PAGES, documents: MAX_DOCUMENTS, seconds: MAX_RUNTIME_SECONDS } = readRunOptions(process.env, INPUT);
+const seedUrls = (process.env.SEED_URLS || INPUT.SEED_URLS || "").split(/[\n,]/).map(value => value.trim()).filter(Boolean);
+if (SEED_ONLY && !seedUrls.length && !process.argv.includes("--check-config")) throw new Error("SEED_ONLY requires at least one SEED_URLS entry. Discovery did not run.");
+const USER_AGENT = "CompetitionFinderCrawler/1.3 (+https://martial-competition-finder.hayboom.chatgpt.site)";
 const storageDir = path.resolve(process.env.CRAWLER_STORAGE_DIR || fileURLToPath(new URL(`../storage/region-${REGION}`, import.meta.url)));
 const metadata = { crawlerVersion: VERSION, region: `group-${REGION}` }, headers = receiverHeaders(TOKEN, process.env.SITE_ACCESS_TOKEN);
 const queueSuffix = `${REGION}${DRY_RUN ? "-dry-run" : ""}`;
@@ -36,13 +32,13 @@ const sendBatch = batch => receiverRequest(INGEST_URL, headers, batch);
 const outbox = ON_APIFY
   ? new CloudOutbox(await Actor.openKeyValueStore(`competition-outbox-${queueSuffix}`), sendBatch, metadata)
   : new Outbox(path.join(storageDir, DRY_RUN ? "dry-run-outbox" : "outbox"), sendBatch, metadata);
-const config = ON_APIFY ? Actor.config : new Configuration({ purgeOnStart: false, persistStateIntervalMillis: 5000, storageClientOptions: { localDataDirectory: path.join(storageDir, "queues"), persistStorage: true } });
+const config = ON_APIFY ? Actor.config : new Configuration({ purgeOnStart: false, persistStateIntervalMillis: 1000, storageClientOptions: { localDataDirectory: path.join(storageDir, "queues"), persistStorage: true } });
 const discoveryQueue = await RequestQueue.open(`discovery-${queueSuffix}`, { config });
 const browserQueue = await RequestQueue.open(`browser-${queueSuffix}`, { config });
 const documentQueue = await RequestQueue.open(`documents-${queueSuffix}`, { config });
 const documentReader = new PublicDocuments();
 const now = new Date(), windowKey = Math.floor(now.getTime() / (6 * 3600_000));
-const counts = { discovered: 0, examined: 0, extracted: 0, failed: 0, inserted: 0, updated: 0, rejected: 0, leadsReceived: 0, documentsExamined: 0, documentEvents: 0, sourceFailures: [] };
+const counts = { discoveryExamined: 0, sourcePagesRead: 0, discovered: 0, examined: 0, extracted: 0, failed: 0, inserted: 0, updated: 0, rejected: 0, leadsReceived: 0, documentsExamined: 0, documentEvents: 0, sourceFailures: [] };
 const browserEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "HOME", "TMPDIR", "LANG", "DISPLAY", "XDG_RUNTIME_DIR", "LD_LIBRARY_PATH"].includes(key)));
 
 async function lead(url, title, reason, decision = "needs_review") {
@@ -68,6 +64,7 @@ async function discoverLinks(links, base, kind, inheritedSport, title = "", dept
 async function processPage(snapshot, request) {
   const url = snapshot.url, kind = request.userData.kind;
   if (/security check|access denied|verify (?:you are|you're) human/i.test(snapshot.title)) { await lead(url, snapshot.title, "Source requires an access/security check; no bypass attempted"); counts.sourceFailures.push({ url, reason: "access_check" }); return; }
+  counts.sourcePagesRead++;
   await discoverLinks(snapshot.links, url, kind, request.userData.inheritedSport || sportFor(snapshot.title, url), snapshot.title, request.userData.depth || 0);
   const result = extractPageEvents({ ...snapshot, contextTitle: request.userData.contextTitle, allowFallback: kind !== "directory" });
   for (const event of result.events) { await outbox.put("event", event); counts.extracted++; }
@@ -90,7 +87,7 @@ const sharedOptions = {
   },
 };
 const discoveryCrawler = new CheerioCrawler({
-  ...sharedOptions, requestQueue: discoveryQueue, maxConcurrency: 3, maxRequestsPerCrawl: MAX_DISCOVERY_PAGES, requestHandlerTimeoutSecs: 90,
+  ...sharedOptions, requestQueue: discoveryQueue, maxConcurrency: 3, ...requestBudget(MAX_DISCOVERY_PAGES), requestHandlerTimeoutSecs: 90,
   additionalMimeTypes: ["application/rss+xml", "application/xml", "text/xml"],
   preNavigationHooks: [async ({ request }, options) => {
     await assertPublicHost(request.url);
@@ -99,6 +96,7 @@ const discoveryCrawler = new CheerioCrawler({
     options.followRedirect = response => { const url = cleanUrl(response.headers.location, response.url); return Boolean(url && !isSocialUrl(url) && !isSupportUrl(url)); };
   }],
   async requestHandler({ request, $, body, response }) {
+    counts.discoveryExamined++;
     const base = response?.url || request.url;
     if (request.userData.kind === "search") {
       const xml = body.toString();
@@ -121,7 +119,7 @@ const discoveryCrawler = new CheerioCrawler({
 }, config);
 
 const browserCrawler = new PlaywrightCrawler({
-  ...sharedOptions, requestQueue: browserQueue, maxConcurrency: 2, maxRequestsPerCrawl: MAX_PAGES, navigationTimeoutSecs: 40, requestHandlerTimeoutSecs: 120,
+  ...sharedOptions, requestQueue: browserQueue, maxConcurrency: 2, ...requestBudget(MAX_PAGES), navigationTimeoutSecs: 40, requestHandlerTimeoutSecs: 120,
   launchContext: { launcher: chromium, useIncognitoPages: true, launchOptions: { headless: true, chromiumSandbox: true, env: browserEnvironment } },
   browserPoolOptions: { useFingerprints: false, prePageCreateHooks: [(_id, _controller, options) => { if (options) { options.serviceWorkers = "block"; options.userAgent = USER_AGENT; } }] },
   preNavigationHooks: [async ({ page, request }, options) => {
@@ -155,7 +153,7 @@ const browserCrawler = new PlaywrightCrawler({
 }, config);
 
 const documentCrawler = new BasicCrawler({
-  requestQueue: documentQueue, maxConcurrency: 1, maxRequestsPerCrawl: MAX_DOCUMENTS, maxRequestRetries: 1, requestHandlerTimeoutSecs: 180,
+  requestQueue: documentQueue, maxConcurrency: 1, ...requestBudget(MAX_DOCUMENTS), maxRequestRetries: 1, requestHandlerTimeoutSecs: 180,
   async requestHandler({ request }) {
     counts.documentsExamined++;
     const downloaded = await documentReader.fetch(request.url);
@@ -175,14 +173,15 @@ if (process.argv.includes("--check-config")) {
   const startingSeeds = DRY_RUN ? { candidates: [], sources: [] } : await receiverRequest(`${INGEST_URL}?region=${REGION}`, headers);
   if (!DRY_RUN && (startingSeeds.service !== "competition-finder-external-ingest" || startingSeeds.schemaVersion !== 2)) throw new Error("Receiver version is not ready; deploy it before crawling");
   if (!DRY_RUN) { const delivered = await outbox.flush(); for (const key of ["inserted", "updated", "rejected", "leadsReceived"]) counts[key] += delivered[key]; }
-  for (const url of (process.env.SEED_URLS || INPUT.SEED_URLS || "").split(/[\n,]/).map(value => value.trim()).filter(Boolean)) await enqueue(url, "", isDirectoryUrl(url) ? "directory" : "event");
+  for (const url of seedUrls) await enqueue(url, "", isDirectoryUrl(url) ? "directory" : "event");
   if (!SEED_ONLY) {
     const existingDiscoveryBacklog = (await discoveryQueue.getInfo())?.pendingRequestCount || 0;
     for (const candidate of startingSeeds.candidates) await enqueue(candidate.url, candidate.title || "", isDirectoryUrl(candidate.url) ? "directory" : "event");
     const directories = [...officialDirectories(now.getFullYear()).filter(source => source.region !== undefined ? source.region === REGION : REGION === 0), ...(REGION === 0 ? startingSeeds.sources.map(source => ({ url: source.url, sport: null })) : [])];
-    for (const { url, sport } of directories) {
+    // Drain previously queued work before starting another search sweep.
+    for (const { url, sport } of existingDiscoveryBacklog === 0 ? directories : []) {
       if (new URL(url).hostname.endsWith("bing.com")) continue;
-      try { await assertPublicHost(url); await discoveryQueue.addRequest({ url, uniqueKey: `${url}:${windowKey}`, userData: { kind: "directory", inheritedSport: sport } }, { forefront: true }); } catch { await lead(url, "", "Official directory could not be resolved"); }
+      try { await assertPublicHost(url); await discoveryQueue.addRequest({ url, uniqueKey: `${url}:${windowKey}`, userData: { kind: "directory", inheritedSport: sport } }); } catch { await lead(url, "", "Official directory could not be resolved"); }
     }
     const queries = existingDiscoveryBacklog === 0 ? searchQueries(REGION, now, windowKey) : [];
     for (const { query, sport } of queries) await discoveryQueue.addRequest({ url: `https://www.bing.com/search?format=rss&q=${encodeURIComponent(query)}`, uniqueKey: `${query}:${windowKey}`, userData: { kind: "search", sport } });
@@ -197,12 +196,12 @@ if (process.argv.includes("--check-config")) {
       const timer = setTimeout(() => crawler.stop("Phase budget reached; remaining requests retained"), MAX_RUNTIME_SECONDS * 1000 * fraction);
       try { await crawler.run(); } finally { clearTimeout(timer); }
     }
-    if (!SEED_ONLY) await phase(discoveryCrawler, 0.25);
+    await phase(discoveryCrawler, 0.25);
     if (!DRY_RUN) { const delivered = await outbox.flush(); for (const key of ["inserted", "updated", "rejected", "leadsReceived"]) counts[key] += delivered[key]; }
     if (!timedOut) await phase(browserCrawler, 0.45);
     if (!timedOut) await phase(documentCrawler, 0.25);
     if (!DRY_RUN) { const delivered = await outbox.flush(); for (const key of ["inserted", "updated", "rejected", "leadsReceived"]) counts[key] += delivered[key]; }
-    if (counts.discovered > 0 && counts.examined === 0 && counts.documentsExamined === 0 && !timedOut) process.exitCode = 1;
+    if (runOutcome(counts).failed) process.exitCode = 1;
   } catch (error) {
     process.exitCode = 1;
     throw error;
@@ -210,7 +209,7 @@ if (process.argv.includes("--check-config")) {
     clearTimeout(deadline);
     const browserInfo = await browserQueue.getInfo(), discoveryInfo = await discoveryQueue.getInfo();
     const documentInfo = await documentQueue.getInfo();
-    const summary = { ...metadata, documentsRemaining: documentInfo?.pendingRequestCount ?? null, dryRun: DRY_RUN, timedOut, ...counts, browserPagesRemaining: browserInfo?.pendingRequestCount ?? null, discoveryPagesRemaining: discoveryInfo?.pendingRequestCount ?? null, finishedAt: new Date().toISOString() };
+    const summary = { ...metadata, ...runOutcome(counts), timeBudgetSeconds: MAX_RUNTIME_SECONDS, pageCountLimit: MAX_PAGES || null, totalEventLimit: null, documentsRemaining: documentInfo?.pendingRequestCount ?? null, dryRun: DRY_RUN, timedOut, ...counts, browserPagesRemaining: browserInfo?.pendingRequestCount ?? null, discoveryPagesRemaining: discoveryInfo?.pendingRequestCount ?? null, finishedAt: new Date().toISOString() };
     await mkdir(storageDir, { recursive: true }); await writeFile(path.join(storageDir, "last-run.json"), JSON.stringify(summary, null, 2));
     log.info(JSON.stringify(summary));
     if (ON_APIFY) { await Actor.setValue("OUTPUT", summary); await Actor.exit({ exitCode: process.exitCode || 0 }); } else await config.getStorageClient().teardown?.();
