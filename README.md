@@ -1,29 +1,39 @@
-# Martial Arts Crawler — first free-hosting test
+# Martial Arts Crawler
 
-Standalone crawler code only. No private website source, credentials, database export, or previous Git history is included.
+## Current status
 
-## Upload to GitHub
+This repository tests the crawler software. **It is not connected to the website database, and no automatic production schedule is enabled.** GitHub Actions is used for development/testing, not promised as a free permanent production crawler host. See [GitHub Actions terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features#actions).
 
-Extract this ZIP on a computer. Upload its contents (not the ZIP itself) into the root of `MoonBoom004/Martial-Arts-Crawler-`. The root must contain package.json, package-lock.json, requirements.txt, src, and .github/workflows/test-crawler.yml.
+The standalone worker includes a Dockerfile and Apify Actor definition. Apify can run it without using the owner's computer. A successful cloud test and a protected receiver connection must be verified before website updates can occur.
 
-If your file picker hides .github, create a file in GitHub named `.github/workflows/test-crawler.yml` and paste the contents of that file from the download. Commit to the default branch.
+## Free cloud test
 
-## First run
+Import this repository into a private Apify Actor. Use the Free plan only, no payment method, no paid Store Actors, and no proxies. Build once, then test with `DRY_RUN=true`, `SEED_ONLY=false`, region `0`, all three request caps set to `0`, and a `270` second processing budget. Set the platform run timeout to `300` seconds. Build time is separate.
 
-Open Actions, choose Test competition crawler, then Run workflow. This is manual only: there is no recurring schedule and no database connection. Do not add credentials yet.
+Apify Free includes a limited monthly allowance, not unlimited compute or storage. When the allowance runs out, work must pause; never upgrade or add overages automatically. Measure actual build/run/storage usage before choosing a recurring schedule. No schedule is enabled by this repository. Named request queues and the named outbox preserve pending work between containers.
 
-The job uses a standard Linux runner and refuses to run in a private repository. Keep paid runner types and paid storage overages disabled in GitHub billing settings. Artifact retention is one day. Check current GitHub free-use terms; no unlimited-resource promise is made.
+Keep website credentials out of source, Actor input, logs, and public artifacts. Configure them only as private environment secrets after a successful test. The dry run requires none and cannot write to the website.
 
-The first run checks a small subset of official sources, with up to 20 browser pages, 15 discovery pages, and 5 documents. Crawl work is bounded to roughly five minutes; dependencies and browser installation add time. The entire job stops after 20 minutes. This is a hosting smoke test, not nationwide coverage.
+## Time, not a fixed number of events
 
-Download public-source-test-results from the completed run. Extracted information is from public pages and may be visible to repository visitors. This test has no private database access. A failure or empty result needs inspection; green status alone does not prove good coverage.
+The diagnostic workflow has no page-count or document-count cutoff. `MAX_PAGES=0`, `MAX_DISCOVERY_PAGES=0`, and `MAX_DOCUMENTS=0` mean keep processing until the time budget is reached. The crawler receives 270 seconds, with a forced process stop by 300 seconds including a grace period. Installation time is outside that crawl budget. Total job timeout remains 20 minutes.
 
-## Next stage
+There is no configured total competition limit. This does not mean unlimited compute or storage, or that thousands of websites can be read in five minutes. Concurrency, retries, per-document size, PDF page limits and site politeness remain bounded.
 
-Only after reviewing this test should a protected connection to the website and recurring scans be configured. Persistent queue storage still needs a privacy-safe setup for public GitHub runs; do not upload private receiver queues or cache credentials. This package intentionally has no persistent cache or schedule.
+Unfinished requests persist to disk. For manual diagnostic runs, a region-specific GitHub cache restores that disk state; caches can be evicted and are **not durable production storage**. Old queued work is processed before another search sweep. The diagnostic cache and artifacts contain public-source material only; do not add private receiver credentials to this workflow.
 
-## Capabilities and limits
+## Manual test
 
-Crawlee and Playwright read HTML and JavaScript pages. Tesseract scans images, and PDFPlumber/Poppler read digital and scanned packets. Rules validate sports, dates, and US locations. Source robots rules and access restrictions are respected. No paid AI, proxy service, or Apify account is required for this GitHub test. The Apify library is installed for compatibility but not activated here.
+Actions → Test competition crawler → Run workflow. Select region 0–4. Region 0 includes official national directories and BODYARMOR State Games, while the other regions rotate state discovery across all six sports. Run again on the same region to continue unfinished diagnostic work.
 
-OCR and the source websites can fail. PDF reading is bounded to the first six pages. This does not guarantee every US competition or access to blocked websites.
+An empty startup with no links now fails. The summary distinguishes pages read without verified events from actual extracted events and from unreadable-source failures. `sourcePagesRead`, `extracted`, `documentsExamined`, `documentEvents`, and remaining queue counts are included. No events are published in this mode.
+
+## Extraction and verification
+
+Crawlee/Playwright read ordinary HTML and JavaScript-rendered pages. Tesseract reads image posters; PDFPlumber/Poppler read digital/scanned packets. Events require a supported sport, real date and US location, with source evidence. Registration and official details remain separate. Past dates are retained as past events, not silently discarded. Private social pages and access restrictions are not bypassed.
+
+An event title is not an organization. Host names come from structured organizer data, and sanctioning labels require explicit source statements. A registration platform is not automatically a governing body. Ambiguous organizations must not be invented. No paid AI or proxies are used.
+
+## Privacy
+
+Only crawler source is published here. The private website, dashboard, tokens and database are excluded. The manual test has no website credentials and uploads public-source test results with one-day retention. Chromium remains sandboxed and receives a restricted environment.

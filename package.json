@@ -1,6 +1,6 @@
 {
   "name": "competition-finder-external-crawler",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,7 +8,8 @@
   },
   "scripts": {
     "crawl": "node src/index.mjs",
-    "check": "node --check src/index.mjs && node --check src/event-data.mjs && node --check src/discovery.mjs && node --check src/snapshot.mjs && node --check src/documents.mjs && node --check src/delivery.mjs && node --check src/safety.mjs"
+    "check": "node --check src/index.mjs && node --check src/event-data.mjs && node --check src/discovery.mjs && node --check src/snapshot.mjs && node --check src/documents.mjs && node --check src/delivery.mjs && node --check src/safety.mjs && node --check src/run-policy.mjs",
+    "test": "node --test src/run-policy.test.mjs"
   },
   "dependencies": {
     "apify": "3.7.0",
