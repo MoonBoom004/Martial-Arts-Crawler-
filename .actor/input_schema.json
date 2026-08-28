@@ -8,7 +8,8 @@
       "type": "integer",
       "default": 0,
       "minimum": 0,
-      "maximum": 4
+      "maximum": 4,
+      "description": "US search region, from 0 through 4. Repeated runs rotate through the whole country."
     },
     "MAX_PAGES": {
       "title": "Browser pages per run",
@@ -45,18 +46,21 @@
     "DRY_RUN": {
       "title": "Test without publishing",
       "type": "boolean",
-      "default": true
+      "default": true,
+      "description": "Extract and verify public events without writing anything to the website."
     },
     "SEED_ONLY": {
       "title": "Use only diagnostic URLs",
       "type": "boolean",
-      "default": false
+      "default": false,
+      "description": "Skip nationwide discovery and inspect only the diagnostic URLs supplied below."
     },
     "SEED_URLS": {
       "title": "Diagnostic URLs, one per line",
       "type": "string",
       "editor": "textarea",
-      "default": ""
+      "default": "",
+      "description": "Optional public diagnostic URLs, separated by commas or new lines."
     }
   }
 }
