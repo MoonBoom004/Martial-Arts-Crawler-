@@ -16,14 +16,14 @@ import { readRunOptions, requestBudget, runOutcome } from "./run-policy.mjs";
 const ON_APIFY = process.env.APIFY_IS_AT_HOME === "1";
 if (ON_APIFY) await Actor.init();
 const INPUT = ON_APIFY ? await Actor.getInput() || {} : {};
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const INGEST_URL = process.env.INGEST_URL || "https://martial-competition-finder.hayboom.chatgpt.site/api/ingest/external";
 const TOKEN = process.env.CRAWLER_INGEST_TOKEN;
 const DRY_RUN = process.env.DRY_RUN === "1" || INPUT.DRY_RUN === true, SEED_ONLY = process.env.SEED_ONLY === "1" || INPUT.SEED_ONLY === true;
 const { region: REGION, pages: MAX_PAGES, discoveryPages: MAX_DISCOVERY_PAGES, documents: MAX_DOCUMENTS, seconds: MAX_RUNTIME_SECONDS } = readRunOptions(process.env, INPUT);
 const seedUrls = (process.env.SEED_URLS || INPUT.SEED_URLS || "").split(/[\n,]/).map(value => value.trim()).filter(Boolean);
 if (SEED_ONLY && !seedUrls.length && !process.argv.includes("--check-config")) throw new Error("SEED_ONLY requires at least one SEED_URLS entry. Discovery did not run.");
-const USER_AGENT = "CompetitionFinderCrawler/1.3 (+https://martial-competition-finder.hayboom.chatgpt.site)";
+const USER_AGENT = "CompetitionFinderCrawler/1.4 (+https://martial-competition-finder.hayboom.chatgpt.site)";
 const storageDir = path.resolve(process.env.CRAWLER_STORAGE_DIR || fileURLToPath(new URL(`../storage/region-${REGION}`, import.meta.url)));
 const metadata = { crawlerVersion: VERSION, region: `group-${REGION}` }, headers = receiverHeaders(TOKEN, process.env.SITE_ACCESS_TOKEN);
 // v2 starts with clean cloud queues after the old queue accumulated search URLs
@@ -51,7 +51,8 @@ async function enqueue(urlValue, title = "", kind = "event", inheritedSport = nu
   if (!url || isSupportUrl(url)) return;
   if (isSocialUrl(url)) { await lead(url, title, "Public social-media lead; verify from an original organizer or registration source. No login or automated access attempted."); return; }
   try { await assertPublicHost(url); } catch { await lead(url, title, "Source could not be resolved to a permitted public address"); return; }
-  const isDocument = kind === "document" || isDocumentUrl(url), queue = isDocument ? documentQueue : browserQueue;
+  const isDocument = kind === "document" || isDocumentUrl(url);
+  const queue = isDocument ? documentQueue : extra.browser === true ? browserQueue : discoveryQueue;
   const result = await queue.addRequest({ url, uniqueKey: `${url}:${windowKey}`, userData: { kind: isDocument ? "document" : kind, title, inheritedSport, ...extra } });
   if (!result.wasAlreadyPresent) { counts.discovered++; if (kind !== "directory") await lead(url, title, isDocument ? "Queued for poster/PDF extraction" : "Queued for an external page check", "pending"); }
 }
@@ -79,6 +80,7 @@ async function processPage(snapshot, request) {
     for (const document of documentCandidates(snapshot)) await enqueue(document.url, document.title, "document", request.userData.inheritedSport, { parent });
     if (!result.events.length) await lead(url, snapshot.title, result.reason);
   }
+  return result.events.length;
 }
 
 const sharedOptions = {
@@ -109,16 +111,18 @@ const discoveryCrawler = new CheerioCrawler({
       return;
     }
     const snapshot = snapshotHtml(body.toString(), base);
-    await processPage(snapshot, request);
-    // Render calendars too: initial HTML may omit their rows.
-    await enqueue(base, snapshot.title || "Official calendar", "directory", request.userData.inheritedSport || sportFor("", base));
+    const extracted = await processPage(snapshot, request);
+    // Use a real browser only when lightweight HTML lacks the event details.
+    if (!extracted && (request.userData.kind === "directory" || snapshot.text.length < 500)) {
+      await enqueue(base, snapshot.title || request.userData.title || "Competition page", request.userData.kind, request.userData.inheritedSport || sportFor("", base), { browser: true, contextTitle: request.userData.contextTitle, depth: request.userData.depth || 0 });
+    }
   },
   failedRequestHandler: async ({ request }) => {
     counts.failed++;
     counts.sourceFailures.push({ url: request.url, reason: "discovery_failed" });
     if (request.userData.kind !== "search") {
       await lead(request.url, request.userData.title, "Lightweight reader could not read this directory; queued for browser rendering");
-      await enqueue(request.url, request.userData.title, "directory", request.userData.inheritedSport, { depth: request.userData.depth || 0 });
+      await enqueue(request.url, request.userData.title, request.userData.kind || "directory", request.userData.inheritedSport, { browser: true, contextTitle: request.userData.contextTitle, depth: request.userData.depth || 0 });
     }
   },
 }, config);
