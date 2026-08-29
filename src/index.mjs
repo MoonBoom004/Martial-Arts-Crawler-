@@ -16,7 +16,7 @@ import { readRunOptions, requestBudget, runOutcome } from "./run-policy.mjs";
 const ON_APIFY = process.env.APIFY_IS_AT_HOME === "1";
 if (ON_APIFY) await Actor.init();
 const INPUT = ON_APIFY ? await Actor.getInput() || {} : {};
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const INGEST_URL = process.env.INGEST_URL || "https://martial-competition-finder.hayboom.chatgpt.site/api/ingest/external";
 const TOKEN = process.env.CRAWLER_INGEST_TOKEN;
 const DRY_RUN = process.env.DRY_RUN === "1" || INPUT.DRY_RUN === true, SEED_ONLY = process.env.SEED_ONLY === "1" || INPUT.SEED_ONLY === true;
@@ -40,7 +40,17 @@ const browserQueue = await RequestQueue.open(`browser-${queueSuffix}`, { config 
 const documentQueue = await RequestQueue.open(`documents-${queueSuffix}`, { config });
 const documentReader = new PublicDocuments();
 const now = new Date(), windowKey = Math.floor(now.getTime() / (6 * 3600_000));
-const counts = { discoveryExamined: 0, sourcePagesRead: 0, discovered: 0, examined: 0, extracted: 0, failed: 0, inserted: 0, updated: 0, rejected: 0, leadsReceived: 0, documentsExamined: 0, documentEvents: 0, sourceFailures: [] };
+const counts = { discoveryExamined: 0, sourcePagesRead: 0, discovered: 0, examined: 0, extracted: 0, failed: 0, inserted: 0, updated: 0, rejected: 0, leadsReceived: 0, documentsExamined: 0, documentsSkipped: 0, documentEvents: 0, sourceFailures: [] };
+const GENERAL_DOCUMENT = /\b(?:rules?|regulations?|polic(?:y|ies)|bylaws?|manual|membership|coach(?:es|ing)?|referee|ranking|results?|minutes|agenda|waiver)\b/i;
+const EVENT_DOCUMENT = /\b(?:flyer|poster|packet|handbook|prospectus|entry form|registration|championship|tournament|qualifier|state games)\b/i;
+function shouldReadDocument(url, title = "", parent = {}) {
+  const context = strip(`${title} ${parent.title || ""} ${parent.contextTitle || ""} ${url}`);
+  if (GENERAL_DOCUMENT.test(context) && !/\b(?:flyer|poster|packet|handbook|prospectus|entry form)\b/i.test(context)) return false;
+  const years = [...context.matchAll(/\b(20\d{2})\b/g)].map(match => Number(match[1]));
+  if (years.length && Math.max(...years) < now.getFullYear() - 1) return false;
+  const parentText = strip(parent.text || "").slice(0, 4000);
+  return Boolean(EVENT_DOCUMENT.test(`${context} ${parentText}`) || sportFor(context, url));
+}
 const browserEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "HOME", "TMPDIR", "LANG", "DISPLAY", "XDG_RUNTIME_DIR", "LD_LIBRARY_PATH"].includes(key)));
 
 async function lead(url, title, reason, decision = "needs_review") {
@@ -52,6 +62,7 @@ async function enqueue(urlValue, title = "", kind = "event", inheritedSport = nu
   if (isSocialUrl(url)) { await lead(url, title, "Public social-media lead; verify from an original organizer or registration source. No login or automated access attempted."); return; }
   try { await assertPublicHost(url); } catch { await lead(url, title, "Source could not be resolved to a permitted public address"); return; }
   const isDocument = kind === "document" || isDocumentUrl(url);
+  if (isDocument && !shouldReadDocument(url, title, extra.parent)) return;
   const queue = isDocument ? documentQueue : extra.browser === true ? browserQueue : discoveryQueue;
   const result = await queue.addRequest({ url, uniqueKey: `${url}:${windowKey}`, userData: { kind: isDocument ? "document" : kind, title, inheritedSport, ...extra } });
   if (!result.wasAlreadyPresent) { counts.discovered++; if (kind !== "directory") await lead(url, title, isDocument ? "Queued for poster/PDF extraction" : "Queued for an external page check", "pending"); }
@@ -164,6 +175,7 @@ const browserCrawler = new PlaywrightCrawler({
 const documentCrawler = new BasicCrawler({
   requestQueue: documentQueue, maxConcurrency: 1, ...requestBudget(MAX_DOCUMENTS), maxRequestRetries: 1, requestHandlerTimeoutSecs: 180,
   async requestHandler({ request }) {
+    if (!shouldReadDocument(request.url, request.userData.title, request.userData.parent)) { counts.documentsSkipped++; return; }
     counts.documentsExamined++;
     const downloaded = await documentReader.fetch(request.url);
     const document = await readDocumentBytes(downloaded.bytes);
@@ -208,10 +220,10 @@ if (process.argv.includes("--check-config")) {
       const timer = setTimeout(() => crawler.stop("Phase budget reached; remaining requests retained"), MAX_RUNTIME_SECONDS * 1000 * fraction);
       try { await crawler.run(); } finally { clearTimeout(timer); }
     }
-    await phase(discoveryCrawler, 0.25);
+    await phase(discoveryCrawler, 0.60);
     if (!DRY_RUN) { const delivered = await outbox.flush(); for (const key of ["inserted", "updated", "rejected", "leadsReceived"]) counts[key] += delivered[key]; }
-    if (!timedOut) await phase(browserCrawler, 0.45);
-    if (!timedOut) await phase(documentCrawler, 0.25);
+    if (!timedOut) await phase(browserCrawler, 0.20);
+    if (!timedOut) await phase(documentCrawler, 0.15);
     if (!DRY_RUN) { const delivered = await outbox.flush(); for (const key of ["inserted", "updated", "rejected", "leadsReceived"]) counts[key] += delivered[key]; }
     const outcome = runOutcome(counts);
     if (outcome.failed) process.exitCode = 1;
