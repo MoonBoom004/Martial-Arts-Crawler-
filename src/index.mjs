@@ -16,7 +16,7 @@ import { readRunOptions, requestBudget, runOutcome } from "./run-policy.mjs";
 const ON_APIFY = process.env.APIFY_IS_AT_HOME === "1";
 if (ON_APIFY) await Actor.init();
 const INPUT = ON_APIFY ? await Actor.getInput() || {} : {};
-const VERSION = "1.4.1";
+const VERSION = "1.4.3";
 const INGEST_URL = process.env.INGEST_URL || "https://martial-competition-finder.hayboom.chatgpt.site/api/ingest/external";
 const TOKEN = process.env.CRAWLER_INGEST_TOKEN;
 const DRY_RUN = process.env.DRY_RUN === "1" || INPUT.DRY_RUN === true, SEED_ONLY = process.env.SEED_ONLY === "1" || INPUT.SEED_ONLY === true;
@@ -45,7 +45,10 @@ const GENERAL_DOCUMENT = /\b(?:rules?|regulations?|polic(?:y|ies)|bylaws?|manual
 const EVENT_DOCUMENT = /\b(?:flyer|poster|packet|handbook|prospectus|entry form|registration|championship|tournament|qualifier|state games)\b/i;
 function shouldReadDocument(url, title = "", parent = {}) {
   const context = strip(`${title} ${parent.title || ""} ${parent.contextTitle || ""} ${url}`);
-  if (GENERAL_DOCUMENT.test(context) && !/\b(?:flyer|poster|packet|handbook|prospectus|entry form)\b/i.test(context)) return false;
+  const strongDocument = /\b(?:flyer|poster|packet|handbook|prospectus|entry form)\b/i.test(context);
+  if (!/\.(?:pdf|png|jpe?g|webp|tiff?)(?:$|[?#])/i.test(url) && !strongDocument) return false;
+  if (/\b(?:logo|sponsor|social|facebook|instagram|youtube|twitter|tiktok|flag|banner)\b/i.test(context) && !strongDocument) return false;
+  if (GENERAL_DOCUMENT.test(context) && !strongDocument) return false;
   const years = [...context.matchAll(/\b(20\d{2})\b/g)].map(match => Number(match[1]));
   if (years.length && Math.max(...years) < now.getFullYear() - 1) return false;
   const parentText = strip(parent.text || "").slice(0, 4000);
@@ -198,7 +201,7 @@ if (process.argv.includes("--check-config")) {
   if (!SEED_ONLY) {
     const existingDiscoveryBacklog = (await discoveryQueue.getInfo())?.pendingRequestCount || 0;
     for (const candidate of startingSeeds.candidates) await enqueue(candidate.url, candidate.title || "", isDirectoryUrl(candidate.url) ? "directory" : "event");
-    const directories = [...officialDirectories(now.getFullYear()).filter(source => source.region !== undefined ? source.region === REGION : REGION === 0), ...(REGION === 0 ? startingSeeds.sources.map(source => ({ url: source.url, sport: null })) : [])];
+    const directories = ON_APIFY ? (REGION === 0 ? startingSeeds.sources.map(source => ({ url: source.url, sport: null })) : []) : officialDirectories(now.getFullYear()).filter(source => source.region !== undefined ? source.region === REGION : REGION === 0);
     // Drain previously queued work before starting another search sweep.
     for (const { url, sport } of existingDiscoveryBacklog === 0 ? directories : []) {
       if (new URL(url).hostname.endsWith("bing.com")) continue;
