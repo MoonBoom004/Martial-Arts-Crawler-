@@ -19,6 +19,7 @@ export const STATE_GROUPS = [
 ];
 export const EVENT_WORDS = /\b(?:open|cup|classic|games|festival|nationals?|championships?|tournaments?|qualifier|trials|rumble|invitational|grand prix|challenge|shiai|meet)\b/i;
 export const NON_EVENT_WORDS = /\b(?:results?|recap|seminar|clinic|camp|course|webinar|meeting|workshop|photo gallery|arm[ -]?wrestling|professional wrestling|wwe)\b/i;
+const GENERIC_EVENT_TITLE = /^(?:20\d{2}\s+)?(?:(?:usa|u s|national|state|regional|local|open)\s+)?(?:(?:tae\s*kwon\s*do|tkd|karate|bjj|jiu\s*jitsu|judo|muay\s*thai|kickboxing|wrestling|martial\s*arts)\s+)?(?:event|events|competition|competitions|tournament|tournaments|championship|championships|open|calendar|schedule)$/i;
 const MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec";
 const MONTH_NUMBERS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const SOCIAL_HOSTS = /(^|\.)(facebook\.com|fb\.com|instagram\.com|youtube\.com|reddit\.com)$/i;
@@ -65,9 +66,15 @@ export function isSocialUrl(url) { try { return SOCIAL_HOSTS.test(new URL(url).h
 /** @param {string} url */
 export function isSupportUrl(url) { try { return /\/(?:privacy|terms|login|signin|author|membership|photos-video|results?)(?:\/|$)/i.test(new URL(url).pathname); } catch { return true; } }
 /** @param {string} value */
-export function strip(value = "") { return String(value).replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/\s+/g, " ").trim(); }
+export function strip(value = "") { return String(value).replace(/<[^>]+>/g, " ").replace(/&#(\d+);/g, (match, number) => { const code = Number(number); return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match; }).replace(/&#x([\da-f]+);/gi, (match, number) => { const code = Number.parseInt(number, 16); return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match; }).replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim(); }
 /** @param {string} value */
 export function canonical(value = "") { return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+/** @param {unknown} value */
+export function specificCompetitionTitle(value) {
+  if (typeof value !== "string") return false;
+  const title = canonical(strip(value));
+  return title.length >= 8 && EVENT_WORDS.test(title) && !NON_EVENT_WORDS.test(title) && !GENERIC_EVENT_TITLE.test(title);
+}
 
 /** @param {number} year @param {number} month @param {number} day */
 function calendarDate(year, month, day) {
@@ -168,6 +175,10 @@ export function confirmedUnitedStates(country, state) {
   if (typeof country === "string" && country.trim()) return /^(?:US|USA|U\.S\.?A?\.?|United States(?: of America)?)$/i.test(country.trim());
   return Boolean(normalizeState(state));
 }
+/** Public U.S.-only listings need a real state, not a search hint or platform default. */
+export function confirmedUnitedStatesForPublication(country, state) {
+  return confirmedUnitedStates(country, state) && Boolean(normalizeState(state));
+}
 /** @param {string} title @param {string} url @param {string} [text] */
 export function sportFor(title, url, text = "") {
   if (/arm[ _-]?wrestling|professional wrestling|\bwwe\b/i.test(title + " " + url)) return null;
@@ -218,7 +229,7 @@ export function extractPageEvents(page) {
   const structuredEvents = jsonEvents(page.html), events = [], reasons = new Set();
   for (const structured of structuredEvents.length ? structuredEvents : page.allowFallback === false ? [] : [{}]) {
     const title = competitionTitle(typeof structured.name === "string" ? structured.name : page.title, page.text, page.contextTitle).slice(0, 240);
-    if (!title || !EVENT_WORDS.test(title) || NON_EVENT_WORDS.test(title) || /^(?:20\d{2} )?(?:events?|tournaments?|competitions?|calendar|events? calendar|schedule)$/i.test(title)) { reasons.add("Page is not a specific competition"); continue; }
+    if (!specificCompetitionTitle(title)) { reasons.add("Page is not a specific competition"); continue; }
     const fallbackDates = structuredEvents.length > 1 ? null : textDates(page.text), startDate = isoDate(structured.startDate) || fallbackDates?.startDate, endDate = isoDate(structured.endDate) || (structured.startDate ? startDate : fallbackDates?.endDate) || startDate;
     if (!startDate || !endDate || endDate < startDate) { reasons.add("Competition date needs confirmation"); continue; }
     const sport = sportFor(title, page.url, strip(structured.description || "") || page.text.slice(0, 6000));
@@ -228,7 +239,7 @@ export function extractPageEvents(page) {
     const country = typeof countryValue === "string" ? countryValue : countryValue?.name || countryValue?.identifier;
     const place = textLocation(page.text + "\n" + page.title);
     const state = normalizeState(address.addressRegion) || place.state, city = typeof address.addressLocality === "string" ? address.addressLocality : place.city;
-    if (!confirmedUnitedStates(country, state)) { reasons.add("A United States location needs confirmation"); continue; }
+    if (!confirmedUnitedStatesForPublication(country, state)) { reasons.add("A United States state and location need confirmation"); continue; }
     const exactAddress = typeof address.streetAddress === "string" && city ? [address.streetAddress, city, state, address.postalCode].filter(Boolean).join(", ") : place.address;
     const links = page.links.map(link => ({ href: cleanUrl(link.href, page.url), label: strip(link.label).slice(0, 300) })).filter(link => link.href);
     const documents = links.filter(link => /flyer|poster|packet|prospectus|rules|\.pdf(?:\?|$)/i.test(`${link.label} ${link.href}`)).slice(0, 20).map(link => ({ url: link.href, documentType: /flyer|poster/i.test(link.label) ? "flyer" : /rules/i.test(link.label) ? "rules" : /packet|prospectus/i.test(link.label) ? "event_packet" : "other", title: link.label || "Competition document", mediaType: /\.pdf(?:\?|$)/i.test(link.href) ? "application/pdf" : undefined }));
@@ -238,7 +249,7 @@ export function extractPageEvents(page) {
     const eligibility = /(?:by )?invitation[ -]only/i.test(page.text) ? "invitation_only" : /\bin[ -]house\b|\bschool members only\b/i.test(page.text) ? "in_house" : "unclear";
     const sanctionText = page.text.match(/(?:sanctioned|recognized)\s+by\s*:?\s*([^\n.]{2,160})/i)?.[1] || "";
     const sanctioningBodies = ["USA Taekwondo", "USATKD", "AAU", "World Taekwondo", "IBJJF", "USA Judo", "USA Wrestling", "NASKA", "WAKO"].filter(name => new RegExp(`\\b${name}\\b`, "i").test(sanctionText));
-    events.push({ sourceUrl: cleanUrl(structured.url, page.url) || page.url, title, martialArt: sport, startDate, endDate, level: levelFor(title), venue: typeof location.name === "string" ? location.name.slice(0, 240) : place.venue?.slice(0, 240), city: city?.slice(0, 120), state, country: "United States", address: exactAddress?.slice(0, 320), registrationUrl: registration?.href, flyerUrl: flyer?.url, hostName: typeof organizer.name === "string" ? organizer.name.slice(0, 240) : undefined, hostUrl: cleanUrl(organizer.url, page.url) || undefined, sanctioningBodies, categories: [], eligibility, locationConfidence: exactAddress ? 0.98 : state ? 0.86 : 0, flyerConfidence: flyer ? 0.95 : 0, membershipConfidence: 0, deadlineConfidence: 0, evidence: [{ field: "title", value: title, sourceUrl: page.url, confidence: structured.name ? 0.98 : 0.88 }, { field: "start_date", value: startDate, sourceUrl: page.url, confidence: structured.startDate ? 0.98 : 0.88 }, { field: "country", value: "United States", sourceUrl: page.url, confidence: country ? 0.98 : 0.86 }], documents });
+    events.push({ sourceUrl: cleanUrl(structured.url, page.url) || page.url, title, martialArt: sport, startDate, endDate, level: levelFor(title), venue: typeof location.name === "string" ? strip(location.name).slice(0, 240) : place.venue?.slice(0, 240), city: city?.slice(0, 120), state, country: "United States", address: exactAddress?.slice(0, 320), registrationUrl: registration?.href, flyerUrl: flyer?.url, hostName: typeof organizer.name === "string" ? strip(organizer.name).slice(0, 240) : undefined, hostUrl: cleanUrl(organizer.url, page.url) || undefined, sanctioningBodies, categories: [], eligibility, locationConfidence: exactAddress ? 0.98 : state ? 0.86 : 0, flyerConfidence: flyer ? 0.95 : 0, membershipConfidence: 0, deadlineConfidence: 0, evidence: [{ field: "title", value: title, sourceUrl: page.url, confidence: structured.name ? 0.98 : 0.88 }, { field: "start_date", value: startDate, sourceUrl: page.url, confidence: structured.startDate ? 0.98 : 0.88 }, { field: "country", value: "United States", sourceUrl: page.url, confidence: country ? 0.98 : 0.86 }], documents });
   }
   return { events, reason: events.length ? null : [...reasons].join("; ") || "Directory or page needs an event-specific link" };
 }
